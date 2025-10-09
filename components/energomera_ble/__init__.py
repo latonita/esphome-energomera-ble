@@ -2,23 +2,27 @@ import re
 from esphome import pins
 import esphome.codegen as cg
 import esphome.config_validation as cv
-from esphome.components import ble_client, binary_sensor, time, text_sensor
+from esphome.components import ble_client, binary_sensor, time
+from esphome.components import sensor as esphome_sensor
 from esphome.const import (
     CONF_ID,
     CONF_ADDRESS,
-
     CONF_RECEIVE_TIMEOUT,
+    CONF_SIGNAL_STRENGTH,
     CONF_UPDATE_INTERVAL,
-
     CONF_TIME_ID,
     CONF_PIN,
+    ENTITY_CATEGORY_DIAGNOSTIC,
+    DEVICE_CLASS_SIGNAL_STRENGTH,
+    STATE_CLASS_MEASUREMENT,
+    UNIT_DECIBEL_MILLIWATT,
 )
 
 CODEOWNERS = ["@latonita"]
 
-AUTO_LOAD = ["binary_sensor", "text_sensor"]
+AUTO_LOAD = ["binary_sensor"]
 
-DEPENDENCIES = ["ble_client"]
+DEPENDENCIES = ["ble_client", "sensor"]
 
 MULTI_CONF = True
 
@@ -90,11 +94,17 @@ CONFIG_SCHEMA = cv.All(
             cv.Optional(CONF_REBOOT_AFTER_FAILURE, default=0): cv.int_range(
                 min=0, max=100
             ),
+            cv.Optional(CONF_SIGNAL_STRENGTH): esphome_sensor.sensor_schema(
+                unit_of_measurement=UNIT_DECIBEL_MILLIWATT,
+                accuracy_decimals=0,
+                device_class=DEVICE_CLASS_SIGNAL_STRENGTH,
+                state_class=STATE_CLASS_MEASUREMENT,
+                entity_category=ENTITY_CATEGORY_DIAGNOSTIC,
+            ),
             cv.Optional(CONF_TIME_ID): cv.use_id(time.RealTimeClock),
             cv.Required(CONF_PIN): cv.int_range(min=0,max=999999),
         }
     )
-#    .extend(cv.COMPONENT_SCHEMA)
     .extend(ble_client.BLE_CLIENT_SCHEMA)
     .extend(cv.polling_component_schema("60s"))
 )
@@ -105,7 +115,9 @@ async def to_code(config):
     await cg.register_component(var, config)
     await ble_client.register_ble_node(var, config)
 
-
+    if signal_strength_config := config.get(CONF_SIGNAL_STRENGTH):
+        sens = await esphome_sensor.new_sensor(signal_strength_config)
+        cg.add(var.set_signal_strength(sens))
 
     if indicator_config := config.get(CONF_INDICATOR):
         sens = cg.new_Pvariable(indicator_config[CONF_ID])
@@ -115,7 +127,8 @@ async def to_code(config):
     if CONF_TIME_ID in config:
         time_ = await cg.get_variable(config[CONF_TIME_ID])
         cg.add(var.set_time_source(time_))
-        
+
+
     cg.add(var.set_meter_address(config[CONF_ADDRESS]))
 
     cg.add(var.set_receive_timeout_ms(config[CONF_RECEIVE_TIMEOUT]))

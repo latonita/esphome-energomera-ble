@@ -1,7 +1,7 @@
 #pragma once
 
-#include "esphome/core/component.h"
 #include "esphome/components/ble_client/ble_client.h"
+#include "esphome/core/component.h"
 
 #ifdef USE_BINARY_SENSOR
 #include "esphome/components/binary_sensor/binary_sensor.h"
@@ -14,9 +14,9 @@
 #include <esp_gattc_api.h>
 
 #include <array>
+#include <map>
 #include <string>
 #include <vector>
-#include <map>
 
 #include "energomera_ble_sensor.h"
 
@@ -27,7 +27,13 @@ const uint8_t VAL_NUM = 12;
 using ValueRefsArray = std::array<char *, VAL_NUM>;
 using SensorMap = std::multimap<std::string, EnergomeraBleSensorBase *>;
 
+using ble_defer_fn_t = std::function<void()>;  // NOLINT
+
 static constexpr size_t RX_HANDLES_NUM = 15;
+static constexpr size_t TX_BUFFER_SIZE = 64;
+static constexpr size_t RX_BUFFER_SIZE = 256;
+
+static constexpr size_t DESIRED_MTU = 64;
 
 class EnergomeraBleComponent : public PollingComponent, public ble_client::BLEClientNode {
  public:
@@ -45,6 +51,7 @@ class EnergomeraBleComponent : public PollingComponent, public ble_client::BLECl
   void set_receive_timeout_ms(uint32_t timeout) { (void) timeout; }
   void set_delay_between_requests_ms(uint32_t delay) { (void) delay; }
   void set_reboot_after_failure(uint16_t value) { (void) value; }
+  void set_signal_strength(sensor::Sensor *signal_strength) { signal_strength_ = signal_strength; }
 
   void register_sensor(EnergomeraBleSensorBase *sensor);
 
@@ -61,22 +68,15 @@ class EnergomeraBleComponent : public PollingComponent, public ble_client::BLECl
  protected:
   bool set_sensor_value_(EnergomeraBleSensorBase *sensor, ValueRefsArray &vals);
 
-  bool discover_characteristics_();
-  // void request_firmware_version_();
-  // void sync_address_from_parent_();
+  bool ble_discover_characteristics_();
+
 
   enum class FsmState : uint8_t {
     NOT_INITIALIZED = 0,
     IDLE,
-    START,
-    RESOLVING,
-    REQUESTING_FIRMWARE,
-    WAITING_FIRMWARE,
-    ENABLING_NOTIFICATION,
-    WAITING_NOTIFICATION_ENABLE,
+    STARTING,
     PREPARING_COMMAND,
     SENDING_COMMAND,
-    WAITING_NOTIFICATION,
     READING_RESPONSE,
     GOT_RESPONSE,
     PUBLISH,
@@ -88,24 +88,37 @@ class EnergomeraBleComponent : public PollingComponent, public ble_client::BLECl
   const char *state_to_string_(FsmState state) const;
   void set_state_(FsmState state);
 
-  void prepare_request_(const std::string &request);
-  void prepare_prog_frame_(const std::string &request);
+  void prepare_request_frame_(const std::string &request);
+  void send_next_fragment_();
 
   // BLE send/receive
   uint16_t get_max_payload_() const;
-  bool send_next_fragment_();
-  void begin_response_reads_(uint8_t slots);
-  void issue_next_response_read_();
-  void handle_command_read_(const esp_ble_gattc_cb_param_t::gattc_read_char_evt_param &param);
-  void finalize_command_response_();
- 
+  void run_in_ble_thread_(const ble_defer_fn_t &fn);
+  ble_defer_fn_t ble_defer_fn_{nullptr};
+
+  void ble_set_error_();
+
+  // BLE Thread functions
+  bool ble_send_next_fragment_();
+  void ble_begin_response_reads_(uint8_t slots);
+  void ble_issue_next_response_read_();
+  void ble_handle_command_read_(const esp_ble_gattc_cb_param_t::gattc_read_char_evt_param &param);
 
   void gattc_event_handler(esp_gattc_cb_event_t event, esp_gatt_if_t gattc_if,
                            esp_ble_gattc_cb_param_t *param) override;
   void gap_event_handler(esp_gap_ble_cb_event_t event, esp_ble_gap_cb_param_t *param) override;
 
-
   uint16_t mtu_{23};
+
+  union {
+    uint8_t raw;
+    struct {
+      bool notifications_enabled : 1;
+      bool pin_code_was_requested : 1;
+      bool tx_error : 1;
+      bool rx_reply : 1;
+    };
+  } flags_{0};
 
   // Handles
   uint16_t ch_version_{0};
@@ -113,35 +126,35 @@ class EnergomeraBleComponent : public PollingComponent, public ble_client::BLECl
   uint16_t ch_handle_cccd_{0};
   uint16_t ch_handles_rx_[RX_HANDLES_NUM]{0};
 
-  std::array<uint8_t, 6> target_address_{};
-  // bool address_set_{false};
-  // bool version_requested_{false};
-  // bool version_reported_{false};
-  // bool service_search_requested_{false};
-  // bool characteristics_resolved_{false};
-  // bool notifications_enabled_{false};
+  uint8_t tx_buffer_[TX_BUFFER_SIZE];
+  uint8_t *tx_ptr_{nullptr};
+  uint8_t tx_data_remaining_{0};
+  uint8_t tx_packet_size_{19};
 
-  // 
   uint8_t tx_sequence_counter_{0};
   bool tx_fragment_started_{false};
 
-  std::vector<uint8_t> tx_message_remaining_;
-  std::vector<uint8_t> response_buffer_;
+  uint8_t rx_buffer_[RX_BUFFER_SIZE];
+  size_t rx_len_{0};
 
+  int8_t rssi_{0};
+
+  // std::vector<uint8_t> response_buffer_;
   uint8_t expected_response_slots_{0};
   uint8_t current_response_slot_{0};
 
   //  bool link_encrypted_{false};
-  bool pin_code_was_requested_{false};
+
   //  std::string pin_code_;
   uint32_t passkey_{0};
 
   SensorMap sensors_{};
   SensorMap::iterator request_iter{nullptr};
   SensorMap::iterator sensor_iter{nullptr};
+  sensor::Sensor *signal_strength_{nullptr};
 
   void internal_safeguard_();
-  
+
   char *get_nth_value_from_csv_(char *line, uint8_t idx);
   uint8_t get_values_from_brackets_(char *line, ValueRefsArray &vals);
 };

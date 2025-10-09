@@ -130,9 +130,6 @@ void EnergomeraBleComponent::setup() {
     return;
   }
 
-  this->tx_message_remaining_.reserve(128);
-  this->response_buffer_.reserve(256);
-
   this->request_iter = this->sensors_.begin();
   this->sensor_iter = this->sensors_.begin();
 
@@ -149,70 +146,15 @@ void EnergomeraBleComponent::setup() {
   ESP_LOGI(TAG, "Energomera BLE setup complete.");
 }
 
-const char *ble_client_state_to_string(espbt::ClientState state) {
-  switch (state) {
-    case espbt::ClientState::INIT:
-      return "INIT";
-    case espbt::ClientState::DISCONNECTING:
-      return "DISCONNECTING";
-    case espbt::ClientState::IDLE:
-      return "IDLE";
-    case espbt::ClientState::DISCOVERED:
-      return "DISCOVERED";
-    case espbt::ClientState::CONNECTING:
-      return "CONNECTING";
-    case espbt::ClientState::CONNECTED:
-      return "CONNECTED";
-    case espbt::ClientState::ESTABLISHED:
-      return "ESTABLISHED";
-    default:
-      return "UNKNOWN";
+void EnergomeraBleComponent::update() { this->try_connect(); }
+
+void EnergomeraBleComponent::dump_config() {
+  ESP_LOGCONFIG(TAG, "Energomera BLE Component");
+  if (this->parent_ != nullptr) {
+    ESP_LOGCONFIG(TAG, "  target address: %s", this->parent_->address_str().c_str());
+  } else {
+    ESP_LOGCONFIG(TAG, "  target address: not set");
   }
-}
-
-void EnergomeraBleComponent::internal_safeguard_() {
-  static uint8_t error_states = 0;
-  static uint8_t ble_connectings = 0;
-
-  if (this->state_ == FsmState::ERROR) {
-    error_states++;
-  }
-
-  auto my_ble_state = this->node_state;
-  auto parent_ble_state = this->parent_->state();
-  if (my_ble_state == espbt::ClientState::CONNECTING) {
-    ble_connectings++;
-  }
-
-  ESP_LOGV(TAG, "Internal safeguard. FSM state is %s, My BLE state is %s, Parent BLE state is %s",
-           this->state_to_string_(this->state_), ble_client_state_to_string(my_ble_state),
-           ble_client_state_to_string(parent_ble_state));
-
-  if (error_states > 10 || ble_connectings > 10) {
-    ESP_LOGE(TAG, "Too many errors or BLE connecting states. Disconnecting.");
-    delay(100);
-    ble_connectings = 0;
-    error_states = 0;
-    this->parent_->disconnect();
-    SET_STATE(FsmState::IDLE);
-    // ESP.restart();
-    // return;
-  }
-
-  this->set_timeout("energomera_internal_safeguard", SAFEGUARD_INTERVAL_MS, [this]() { this->internal_safeguard_(); });
-}
-
-void EnergomeraBleComponent::remove_bonding() {
-  if (this->parent_ == nullptr) {
-    ESP_LOGE(TAG, "BLE client parent not configured");
-    return;
-  }
-  if (this->parent_->get_remote_bda() != nullptr) {
-    auto status = esp_ble_remove_bond_device(this->parent_->get_remote_bda());
-    ESP_LOGI(TAG, "Bond removal. Status %d", status);
-    esp_ble_gattc_cache_clean(this->parent_->get_remote_bda());
-  }
-  SET_STATE(FsmState::IDLE);
 }
 
 void EnergomeraBleComponent::register_sensor(EnergomeraBleSensorBase *sensor) {
@@ -220,72 +162,66 @@ void EnergomeraBleComponent::register_sensor(EnergomeraBleSensorBase *sensor) {
 }
 
 void EnergomeraBleComponent::loop() {
-  ValueRefsArray vals;  // values from brackets, refs to this->buffers_.in
-  char *in_param_ptr =
-      (char *) &this->response_buffer_.data()[1];  // ref to second byte, first is STX/SOH in R1 requests
+  ValueRefsArray vals;                                 // values from brackets, refs to this->buffers_.in
+  char *in_param_ptr = (char *) &this->rx_buffer_[1];  // ref to second byte, first is STX/SOH in R1 requests
 
   switch (this->state_) {
     case FsmState::IDLE: {
     } break;
 
-    case FsmState::START: {
-    } break;
-
-    case FsmState::RESOLVING: {
-    } break;
-
-    case FsmState::REQUESTING_FIRMWARE: {
-    } break;
-
-    case FsmState::WAITING_FIRMWARE: {
-    } break;
-
-    case FsmState::ENABLING_NOTIFICATION: {
-    } break;
-
-    case FsmState::WAITING_NOTIFICATION_ENABLE: {
+    case FsmState::STARTING: {
+      if (this->flags_.notifications_enabled) {
+        SET_STATE(FsmState::PREPARING_COMMAND);
+      }
     } break;
 
     case FsmState::PREPARING_COMMAND: {
       if (this->request_iter == this->sensors_.end()) {
-        ESP_LOGI(TAG, "All requests sent");
         SET_STATE(FsmState::PUBLISH);
         this->parent_->disconnect();
         break;
       }
-      this->response_buffer_.clear();
-      auto req = this->request_iter->first;
-      this->prepare_prog_frame_(req.c_str());
-      ESP_LOGI(TAG, "Sending request %s (%u bytes payload)", req.c_str(),
-               (unsigned) this->tx_message_remaining_.size());
+
       SET_STATE(FsmState::SENDING_COMMAND);
 
+      this->rx_len_ = 0;
+
+      this->flags_.tx_error = false;
+      this->flags_.rx_reply = false;
+
+      auto req = this->request_iter->first;
+      this->prepare_request_frame_(req.c_str());
+      ESP_LOGI(TAG, "Sending request %s (%u bytes payload)", req.c_str(), this->tx_data_remaining_);
+      this->send_next_fragment_();
     } break;
+
     case FsmState::SENDING_COMMAND: {
-      if (this->send_next_fragment_()) {
-      } else {
+      if (this->flags_.tx_error) {
+        ESP_LOGE(TAG, "Error sending data");
         SET_STATE(FsmState::ERROR);
+      } else if (this->tx_data_remaining_ == 0) {
+        SET_STATE(FsmState::READING_RESPONSE);
       }
     } break;
 
-    case FsmState::WAITING_NOTIFICATION: {
-    } break;
-
     case FsmState::READING_RESPONSE: {
-      // reading packets
+      if (this->flags_.rx_reply) {
+        SET_STATE(FsmState::GOT_RESPONSE);
+      }
     } break;
 
-    case FsmState::GOT_RESPONSE:
-      // full packet received
-      if (!this->response_buffer_.empty()) {
-        uint8_t brackets_found = get_values_from_brackets_(in_param_ptr, vals);
-        if (!brackets_found) {
-          ESP_LOGE(TAG, "Invalid frame format: '%s'", in_param_ptr);
-          return;
-        }
+    case FsmState::GOT_RESPONSE: {
+      do {
+        if (this->rx_len_ == 0)
+          break;
+
+        auto brackets_found = get_values_from_brackets_(in_param_ptr, vals);
+        if (!brackets_found)
+          break;
 
         ESP_LOGD(TAG,
-                 "Received name: '%s', values: %d, idx: 1(%s), 2(%s), 3(%s), 4(%s), 5(%s), 6(%s), 7(%s), 8(%s), 9(%s), "
+                 "Received name: '%s', values: %d, idx: 1(%s), 2(%s), 3(%s), "
+                 "4(%s), 5(%s), 6(%s), 7(%s), 8(%s), 9(%s), "
                  "10(%s), 11(%s), 12(%s)",
                  in_param_ptr, brackets_found, vals[0], vals[1], vals[2], vals[3], vals[4], vals[5], vals[6], vals[7],
                  vals[8], vals[9], vals[10], vals[11]);
@@ -296,32 +232,35 @@ void EnergomeraBleComponent::loop() {
           } else {
             ESP_LOGE(TAG, "Request '%s' either not supported or malformed.", in_param_ptr);
           }
-        } else {
-          auto req = this->request_iter->first;
-
-          if (this->request_iter->second->get_function() != in_param_ptr) {
-            ESP_LOGE(TAG, "Returned data name mismatch. Skipping frame");
-            return;
-          }
-
-          auto range = sensors_.equal_range(req);
-          for (auto it = range.first; it != range.second; ++it) {
-            if (!it->second->is_failed())
-              set_sensor_value_(it->second, vals);
-          }
+          break;
         }
-      }
+
+        auto req = this->request_iter->first;
+        if (this->request_iter->second->get_function() != in_param_ptr) {
+          ESP_LOGE(TAG, "Returned data name mismatch. Skipping frame");
+          break;
+        }
+
+        auto range = sensors_.equal_range(req);
+        for (auto it = range.first; it != range.second; ++it) {
+          if (!it->second->is_failed())
+            set_sensor_value_(it->second, vals);
+        }
+      } while (0);
 
       this->request_iter = this->sensors_.upper_bound(this->request_iter->first);
-      this->response_buffer_.clear();
+      this->rx_len_ = 0;
       SET_STATE(FsmState::PREPARING_COMMAND);
-      break;
+    } break;
 
     case FsmState::PUBLISH: {
       if (this->sensor_iter != this->sensors_.end()) {
         this->sensor_iter->second->publish();
         this->sensor_iter++;
       } else {
+        if (this->signal_strength_ != nullptr) {
+          this->signal_strength_->publish_state(this->rssi_);
+        }
         SET_STATE(FsmState::IDLE);
       }
     } break;
@@ -406,7 +345,8 @@ bool EnergomeraBleComponent::set_sensor_value_(EnergomeraBleSensorBase *sensor, 
     str = this->get_nth_value_from_csv_(str, sub_idx);
     if (str == nullptr) {
       ESP_LOGE(TAG,
-               "Cannot extract sensor value by sub-index %d. Is data comma-separated? Also note that sub-index starts "
+               "Cannot extract sensor value by sub-index %d. Is data "
+               "comma-separated? Also note that sub-index starts "
                "from 1",
                sub_idx);
       str_buffer[0] = '\0';
@@ -418,12 +358,16 @@ bool EnergomeraBleComponent::set_sensor_value_(EnergomeraBleSensorBase *sensor, 
 #ifdef USE_SENSOR
   if (type == SensorType::SENSOR) {
     float f = 0;
-    // todo: for non-energomeras... value can be "100.0" or "100.0*kWh" or "100.0#A"
+    // todo: for non-energomeras... value can be "100.0" or "100.0*kWh" or
+    // "100.0#A"
     ret = str && str[0] && char2float(str, f);
     if (ret) {
       static_cast<EnergomeraBleSensor *>(sensor)->set_value(f);
     } else {
-      ESP_LOGE(TAG, "Cannot convert incoming data to a number. Consider using a text sensor. Invalid data: '%s'", str);
+      ESP_LOGE(TAG,
+               "Cannot convert incoming data to a number. Consider using a "
+               "text sensor. Invalid data: '%s'",
+               str);
     }
   }
 #endif
@@ -435,6 +379,73 @@ bool EnergomeraBleComponent::set_sensor_value_(EnergomeraBleSensorBase *sensor, 
   return ret;
 }
 
+const char *ble_client_state_to_string(espbt::ClientState state) {
+  switch (state) {
+    case espbt::ClientState::INIT:
+      return "INIT";
+    case espbt::ClientState::DISCONNECTING:
+      return "DISCONNECTING";
+    case espbt::ClientState::IDLE:
+      return "IDLE";
+    case espbt::ClientState::DISCOVERED:
+      return "DISCOVERED";
+    case espbt::ClientState::CONNECTING:
+      return "CONNECTING";
+    case espbt::ClientState::CONNECTED:
+      return "CONNECTED";
+    case espbt::ClientState::ESTABLISHED:
+      return "ESTABLISHED";
+    default:
+      return "UNKNOWN";
+  }
+}
+
+void EnergomeraBleComponent::internal_safeguard_() {
+  static uint8_t error_states = 0;
+  static uint8_t ble_connectings = 0;
+
+  if (this->state_ == FsmState::ERROR) {
+    error_states++;
+  }
+
+  auto my_ble_state = this->node_state;
+  auto parent_ble_state = this->parent_->state();
+  if (my_ble_state == espbt::ClientState::CONNECTING) {
+    ble_connectings++;
+  }
+
+  ESP_LOGV(TAG,
+           "Internal safeguard. FSM state is %s, My BLE state is %s, Parent "
+           "BLE state is %s",
+           this->state_to_string_(this->state_), ble_client_state_to_string(my_ble_state),
+           ble_client_state_to_string(parent_ble_state));
+
+  if (error_states > 10 || ble_connectings > 10) {
+    ESP_LOGE(TAG, "Too many errors or BLE connecting states. Disconnecting.");
+    delay(100);
+    ble_connectings = 0;
+    error_states = 0;
+    this->parent_->disconnect();
+    SET_STATE(FsmState::IDLE);
+    // ESP.restart();
+    // return;
+  }
+
+  this->set_timeout("energomera_internal_safeguard", SAFEGUARD_INTERVAL_MS, [this]() { this->internal_safeguard_(); });
+}
+
+void EnergomeraBleComponent::remove_bonding() {
+  if (this->parent_ == nullptr) {
+    return;
+  }
+  if (this->parent_->get_remote_bda() != nullptr) {
+    auto status = esp_ble_remove_bond_device(this->parent_->get_remote_bda());
+    ESP_LOGI(TAG, "Bond removal. Status %d", status);
+    esp_ble_gattc_cache_clean(this->parent_->get_remote_bda());
+  }
+  SET_STATE(FsmState::IDLE);
+}
+
 void EnergomeraBleComponent::try_connect() {
   if (this->state_ != FsmState::IDLE) {
     ESP_LOGW(TAG, "Not in IDLE state, can't start data collection. Current state is %s",
@@ -442,67 +453,52 @@ void EnergomeraBleComponent::try_connect() {
     return;
   }
   ESP_LOGI(TAG, "Initiating data collection from Energomera BLE device");
+
+  SET_STATE(FsmState::STARTING);
+
+  this->ch_handle_tx_ = 0;
+  this->ch_handle_cccd_ = 0;
+  memset(this->ch_handles_rx_, 0, sizeof(this->ch_handles_rx_));
+  this->tx_fragment_started_ = false;
+  this->tx_sequence_counter_ = 0;
+  this->tx_ptr_ = nullptr;
+  this->tx_data_remaining_ = 0;
+  this->rx_len_ = 0;
+  this->expected_response_slots_ = 0;
+  this->current_response_slot_ = 0;
+  this->flags_.raw = 0;
+
   this->request_iter = this->sensors_.begin();
   this->sensor_iter = this->sensors_.begin();
 
-  auto ret = esp_ble_gatt_set_local_mtu(200);
-  if (ret) {
-    ESP_LOGE(TAG, "set local  MTU failed, error code = %x", ret);
-  }
+  esp_ble_gatt_set_local_mtu(DESIRED_MTU);
 
-  /* set the security iocap & auth_req & key size & init key response key parameters to the stack*/
-  esp_ble_auth_req_t auth_req = ESP_LE_AUTH_REQ_SC_MITM_BOND;  // bonding with peer device after authentication
-  esp_ble_io_cap_t iocap = ESP_IO_CAP_IN;  // NONE;                    // set the IO capability to No output No input
-  uint8_t key_size = 16;                   // the key size should be 7~16 bytes
-  uint8_t init_key = ESP_BLE_ENC_KEY_MASK | ESP_BLE_ID_KEY_MASK;
-  uint8_t rsp_key = ESP_BLE_ENC_KEY_MASK | ESP_BLE_ID_KEY_MASK;
-  uint8_t oob_support = ESP_BLE_OOB_DISABLE;
+  esp_ble_auth_req_t auth_req = ESP_LE_AUTH_REQ_SC_MITM_BOND;
   esp_ble_gap_set_security_param(ESP_BLE_SM_AUTHEN_REQ_MODE, &auth_req, sizeof(uint8_t));
+  esp_ble_io_cap_t iocap = ESP_IO_CAP_IN;
   esp_ble_gap_set_security_param(ESP_BLE_SM_IOCAP_MODE, &iocap, sizeof(uint8_t));
+  uint8_t key_size = 16;
   esp_ble_gap_set_security_param(ESP_BLE_SM_MAX_KEY_SIZE, &key_size, sizeof(uint8_t));
+  uint8_t oob_support = ESP_BLE_OOB_DISABLE;
   esp_ble_gap_set_security_param(ESP_BLE_SM_OOB_SUPPORT, &oob_support, sizeof(uint8_t));
-
-  // Enable bonding
   uint8_t bonding = 1;
   esp_ble_gap_set_security_param(ESP_BLE_SM_SET_INIT_KEY, &bonding, sizeof(uint8_t));
 
   this->parent_->connect();
 }
 
-void EnergomeraBleComponent::update() { this->try_connect(); }
-
-void EnergomeraBleComponent::dump_config() {
-  ESP_LOGCONFIG(TAG, "Energomera BLE Component");
-  if (this->parent_ != nullptr) {
-    ESP_LOGCONFIG(TAG, "  target address: %s", this->parent_->address_str().c_str());
-  } else {
-    ESP_LOGCONFIG(TAG, "  target address: not set");
-  }
+void EnergomeraBleComponent::send_next_fragment_() {
+  this->run_in_ble_thread_([this]() {
+    // this->flags_.tx_error = ;
+    this->ble_send_next_fragment_();
+  });
 }
 
-// void EnergomeraBleComponent::sync_address_from_parent_() {
-//   if (this->address_set_ || this->parent_ == nullptr)
-//     return;
-//   uint8_t *remote = this->parent_->get_remote_bda();
-//   if (remote == nullptr)
-//     return;
-//   bool nonzero = false;
-//   for (uint8_t i = 0; i < 6; i++) {
-//     if (remote[i] != 0) {
-//       nonzero = true;
-//       break;
-//     }
-//   }
-//   if (!nonzero)
-//     return;
-//   std::memcpy(this->target_address_.data(), remote, 6);
-//   this->address_set_ = true;
-//   ESP_LOGD(TAG, "Using parent BLE address: %02X:%02X:%02X:%02X:%02X:%02X", remote[0], remote[1], remote[2],
-//   remote[3],
-//            remote[4], remote[5]);
-// }
+void EnergomeraBleComponent::ble_set_error_() {
+  this->parent_->run_later([this]() { this->flags_.tx_error = true; });
+}
 
-bool EnergomeraBleComponent::discover_characteristics_() {
+bool EnergomeraBleComponent::ble_discover_characteristics_() {
   bool result{true};
   esphome::ble_client::BLECharacteristic *chr;
   ESP_LOGV(TAG, "Discovering Energomera characteristics...");
@@ -512,7 +508,6 @@ bool EnergomeraBleComponent::discover_characteristics_() {
       ESP_LOGW(TAG, "No TX/Notify found");
       result = false;
     } else {
-      ESP_LOGD(TAG, "TX/Notify handle: 0x%04X", chr->handle);
       this->ch_handle_tx_ = chr->handle;
     }
   }
@@ -521,7 +516,6 @@ bool EnergomeraBleComponent::discover_characteristics_() {
     ESP_LOGW(TAG, "No CCCD descriptor found");
     result = false;
   } else {
-    ESP_LOGD(TAG, "CCCD descriptor handle: 0x%04X", descr->handle);
     this->ch_handle_cccd_ = descr->handle;
   }
 
@@ -532,7 +526,6 @@ bool EnergomeraBleComponent::discover_characteristics_() {
         ESP_LOGW(TAG, "No RX%zu found", i);
         result = false;
       } else {
-        ESP_LOGD(TAG, "RX %zu handle: 0x%04X", i, chr->handle);
         this->ch_handles_rx_[i] = chr->handle;
       }
     }
@@ -541,26 +534,29 @@ bool EnergomeraBleComponent::discover_characteristics_() {
   return result;
 }
 
-void EnergomeraBleComponent::prepare_prog_frame_(const std::string &request) {
-  static uint8_t command_buffer[128];
+void EnergomeraBleComponent::prepare_request_frame_(const std::string &request) {
+  // Prepare the command frame
+  size_t len = snprintf((char *) this->tx_buffer_, TX_BUFFER_SIZE, "/?!\x01R1\x02%s\x03", request.c_str());
+  len++;  // include null terminator
 
-  size_t len = snprintf((char *) command_buffer, sizeof(command_buffer), "/?!\x01R1\x02%s\x03", request.c_str());
-  this->tx_message_remaining_.assign(command_buffer, command_buffer + len + 1);  // include null terminator
-
+  // Check sum
   int checksum = 0;
-  for (size_t i = 0; i < tx_message_remaining_.size() - 5; ++i) {
-    checksum += tx_message_remaining_[i + 4];
+  for (size_t i = 0; i < len - 5; i++) {
+    checksum += this->tx_buffer_[i + 4];
   }
-  tx_message_remaining_[tx_message_remaining_.size() - 1] = static_cast<uint8_t>(checksum & 0x7F);
+  this->tx_buffer_[len - 1] = static_cast<uint8_t>(checksum & 0x7F);
 
-  for (auto &byte : this->tx_message_remaining_) {
-    byte = apply_even_parity(byte & 0x7F);
+  // Parity
+  for (size_t i = 0; i < len; i++) {
+    this->tx_buffer_[i] = apply_even_parity(this->tx_buffer_[i]);
   }
+
+  this->tx_data_remaining_ = len;
+  this->tx_ptr_ = &this->tx_buffer_[0];
+
   this->tx_fragment_started_ = false;
   this->tx_sequence_counter_ = 0;
 }
-
-void EnergomeraBleComponent::prepare_request_(const std::string &request) { this->tx_message_remaining_.clear(); }
 
 uint16_t EnergomeraBleComponent::get_max_payload_() const {
   if (this->mtu_ <= 4)
@@ -568,12 +564,24 @@ uint16_t EnergomeraBleComponent::get_max_payload_() const {
   return this->mtu_ - 4;
 }
 
-bool EnergomeraBleComponent::send_next_fragment_() {
-  if (this->parent_ == nullptr || this->ch_handle_tx_ == 0)
-    return false;
+void EnergomeraBleComponent::run_in_ble_thread_(const ble_defer_fn_t &fn) {
+  if (this->parent_ == nullptr) {
+    return;
+  }
+  this->ble_defer_fn_ = fn;
+  esp_ble_gap_read_rssi(this->parent_->get_remote_bda());
+}
 
-  if (this->tx_message_remaining_.empty())
+bool EnergomeraBleComponent::ble_send_next_fragment_() {
+  if (this->parent_ == nullptr || this->ch_handle_tx_ == 0) {
+    ESP_LOGV(TAG, "BLE component not ready");
     return false;
+  }
+
+  if (this->tx_ptr_ == nullptr || this->tx_data_remaining_ == 0) {
+    ESP_LOGV(TAG, "No data to send");
+    return false;
+  }
 
   uint16_t max_payload = this->get_max_payload_();
   if (max_payload == 0) {
@@ -581,10 +589,12 @@ bool EnergomeraBleComponent::send_next_fragment_() {
     return false;
   }
 
-  bool more_after_this = this->tx_message_remaining_.size() > max_payload;
-  uint16_t chunk_len = more_after_this ? max_payload : this->tx_message_remaining_.size();
+  bool more_after_this = this->tx_data_remaining_ > max_payload;
+  uint16_t chunk_len = more_after_this ? max_payload : this->tx_data_remaining_;
 
-  std::vector<uint8_t> packet(chunk_len + 1);
+  const uint8_t packet_len = chunk_len + 1;
+  uint8_t packet[packet_len];
+
   if (!this->tx_fragment_started_) {
     this->tx_fragment_started_ = true;
     this->tx_sequence_counter_ = 0;
@@ -601,32 +611,30 @@ bool EnergomeraBleComponent::send_next_fragment_() {
     if (!more_after_this)
       packet[0] |= 0x80;
   }
-
-  std::copy_n(this->tx_message_remaining_.begin(), chunk_len, packet.begin() + 1);
+  memcpy(packet + 1, this->tx_ptr_, chunk_len);
 
   esp_err_t status =
       esp_ble_gattc_write_char(this->parent_->get_gattc_if(), this->parent_->get_conn_id(), this->ch_handle_tx_,
-                               packet.size(), packet.data(), ESP_GATT_WRITE_TYPE_NO_RSP, ESP_GATT_AUTH_REQ_NONE);
+                               packet_len, packet, ESP_GATT_WRITE_TYPE_NO_RSP, ESP_GATT_AUTH_REQ_NONE);
   if (status != ESP_OK) {
-    ESP_LOGW(TAG, "send_next_fragment_() esp_ble_gattc_write_char failed: %d", status);
+    ESP_LOGW(TAG, "esp_ble_gattc_write_char failed: %d", status);
     return false;
   }
 
-  ESP_LOGV(TAG, "TX: %s", format_hex_pretty(packet.data(), packet.size()).c_str());
-
-  this->tx_message_remaining_.erase(this->tx_message_remaining_.begin(),
-                                    this->tx_message_remaining_.begin() + chunk_len);
+  ESP_LOGV(TAG, "TX: %s", format_hex_pretty(packet, packet_len).c_str());
 
   if (more_after_this) {
-    this->parent_->run_later([this]() { this->send_next_fragment_(); });
+    this->tx_ptr_ += chunk_len;
+    this->tx_data_remaining_ -= chunk_len;
+    this->send_next_fragment_();
   } else {
-    SET_STATE(FsmState::WAITING_NOTIFICATION);
+    this->tx_ptr_ = nullptr;
+    this->tx_data_remaining_ = 0;
   }
-
   return true;
 }
 
-void EnergomeraBleComponent::begin_response_reads_(uint8_t slot_count) {
+void EnergomeraBleComponent::ble_begin_response_reads_(uint8_t slot_count) {
   uint8_t slots = slot_count + 1;
   if (slots == 0)
     slots = 1;
@@ -636,23 +644,30 @@ void EnergomeraBleComponent::begin_response_reads_(uint8_t slot_count) {
 
   this->expected_response_slots_ = slots;
   this->current_response_slot_ = 0;
-  this->response_buffer_.clear();
+  this->rx_len_ = 0;
 
-  SET_STATE(FsmState::READING_RESPONSE);
-  this->issue_next_response_read_();
+  this->ble_issue_next_response_read_();
 }
 
-void EnergomeraBleComponent::issue_next_response_read_() {
+void EnergomeraBleComponent::ble_issue_next_response_read_() {
   if (this->current_response_slot_ >= this->expected_response_slots_) {
-    this->finalize_command_response_();
+    this->flags_.rx_reply = true;
+    if (this->rx_len_ == 0) {
+      return;
+    }
+    for (size_t i = 0; i < this->rx_len_; i++) {
+      this->rx_buffer_[i] = this->rx_buffer_[i] & 0x7F;
+    }
+    ESP_LOGV(TAG, "RX: %s", format_frame_pretty(this->rx_buffer_, this->rx_len_).c_str());
+    ESP_LOGVV(TAG, "RX: %s", format_hex_pretty(this->rx_buffer_, this->rx_len_).c_str());
     return;
   }
 
   uint16_t handle = this->ch_handles_rx_[this->current_response_slot_];
   if (handle == 0) {
-    ESP_LOGW(TAG, "Response characteristic index %u not resolved", this->current_response_slot_);
+    ESP_LOGW(TAG, "Response characteristic index %u not resolved, next", this->current_response_slot_);
     this->current_response_slot_++;
-    this->issue_next_response_read_();
+    this->ble_issue_next_response_read_();
     return;
   }
 
@@ -664,31 +679,22 @@ void EnergomeraBleComponent::issue_next_response_read_() {
   }
 }
 
-void EnergomeraBleComponent::handle_command_read_(const esp_ble_gattc_cb_param_t::gattc_read_char_evt_param &param) {
+void EnergomeraBleComponent::ble_handle_command_read_(
+    const esp_ble_gattc_cb_param_t::gattc_read_char_evt_param &param) {
   if (param.status != ESP_GATT_OK) {
     ESP_LOGW(TAG, "Response read failed (handle 0x%04X): %d", param.handle, param.status);
     SET_STATE(FsmState::ERROR);
     return;
   }
 
-  for (uint16_t i = 0; i < param.value_len; i++) {
-    this->response_buffer_.push_back(param.value[i] & 0x7F);
-  }
+  if (this->rx_len_ + param.value_len > RX_BUFFER_SIZE)
+    return;
+
+  memcpy(this->rx_buffer_ + this->rx_len_, param.value, param.value_len);
+  this->rx_len_ += param.value_len;
 
   this->current_response_slot_++;
-  this->issue_next_response_read_();
-}
-
-void EnergomeraBleComponent::finalize_command_response_() {
-  SET_STATE(FsmState::GOT_RESPONSE);
-
-  if (this->response_buffer_.empty()) {
-    ESP_LOGW(TAG, "No response payload received");
-    return;
-  }
-
-  ESP_LOGV(TAG, "RX: %s", format_frame_pretty(this->response_buffer_.data(), this->response_buffer_.size()).c_str());
-  ESP_LOGVV(TAG, "RX: %s", format_hex_pretty(this->response_buffer_.data(), this->response_buffer_.size()).c_str());
+  this->ble_issue_next_response_read_();
 }
 
 void EnergomeraBleComponent::gattc_event_handler(esp_gattc_cb_event_t event, esp_gatt_if_t gattc_if,
@@ -697,16 +703,6 @@ void EnergomeraBleComponent::gattc_event_handler(esp_gattc_cb_event_t event, esp
     case ESP_GATTC_CONNECT_EVT: {
       if (!this->parent_->check_addr(param->connect.remote_bda))
         break;
-
-      this->ch_handle_tx_ = 0;
-      this->ch_handle_cccd_ = 0;
-      memset(this->ch_handles_rx_, 0, sizeof(this->ch_handles_rx_));
-      this->tx_fragment_started_ = false;
-      this->tx_sequence_counter_ = 0;
-      this->tx_message_remaining_.clear();
-      this->response_buffer_.clear();
-      this->expected_response_slots_ = 0;
-      this->current_response_slot_ = 0;
 
       break;
     }
@@ -726,7 +722,6 @@ void EnergomeraBleComponent::gattc_event_handler(esp_gattc_cb_event_t event, esp
     case ESP_GATTC_CFG_MTU_EVT: {
       if (param->cfg_mtu.status == ESP_GATT_OK) {
         this->mtu_ = param->cfg_mtu.mtu;
-        ESP_LOGVV(TAG, "MTU set to %d", param->cfg_mtu.mtu);
       }
       break;
     }
@@ -737,13 +732,14 @@ void EnergomeraBleComponent::gattc_event_handler(esp_gattc_cb_event_t event, esp
       ESP_LOGVV(TAG, "ESP_GATTC_SEARCH_CMPL_EVT: connected=%s, paired=%s", this->parent_->connected() ? "YES" : "NO",
                 this->parent_->is_paired() ? "YES" : "NO");
 
-      if (!this->discover_characteristics_()) {
+      if (!this->ble_discover_characteristics_()) {
         SET_STATE(FsmState::ERROR);
         this->parent_->disconnect();
         break;
       }
 
-      // TODO: check if characteristics not found - we need to disconnect, remove bond, retry connection it will re-pair
+      // TODO: check if characteristics not found - we need to disconnect, remove
+      // bond, retry connection it will re-pair
 
       esp_err_t status = esp_ble_gattc_register_for_notify(this->parent_->get_gattc_if(),
                                                            this->parent_->get_remote_bda(), this->ch_handle_tx_);
@@ -761,16 +757,13 @@ void EnergomeraBleComponent::gattc_event_handler(esp_gattc_cb_event_t event, esp
         SET_STATE(FsmState::ERROR);
         return;
       }
-      SET_STATE(FsmState::WAITING_NOTIFICATION_ENABLE);
 
     } break;
 
     case ESP_GATTC_READ_CHAR_EVT: {
       if (param->read.conn_id != this->parent_->get_conn_id())
         break;
-
-      if (this->state_ == FsmState::READING_RESPONSE)
-        this->handle_command_read_(param->read);
+      this->ble_handle_command_read_(param->read);
       break;
     }
 
@@ -780,14 +773,11 @@ void EnergomeraBleComponent::gattc_event_handler(esp_gattc_cb_event_t event, esp
       ESP_LOGVV(TAG, "ESP_GATTC_WRITE_DESCR_EVT received (handle = 0x%04X, status=%d)", param->write.handle,
                 param->write.status);
 
-      if (this->state_ == FsmState::WAITING_NOTIFICATION_ENABLE) {
-        if (param->write.status == ESP_GATT_OK) {
-          ESP_LOGI(TAG, "Notifications enabled");
-          SET_STATE(FsmState::PREPARING_COMMAND);
-        } else {
-          ESP_LOGW(TAG, "Failed to enable notifications: %d", param->write.status);
-          SET_STATE(FsmState::ERROR);
-        }
+      if (param->write.status == ESP_GATT_OK) {
+        this->flags_.notifications_enabled = true;
+      } else {
+        ESP_LOGW(TAG, "Failed to enable notifications: %d", param->write.status);
+        SET_STATE(FsmState::ERROR);
       }
       break;
     }
@@ -802,9 +792,6 @@ void EnergomeraBleComponent::gattc_event_handler(esp_gattc_cb_event_t event, esp
       if (!param->notify.is_notify)
         break;
 
-      if (this->state_ != FsmState::WAITING_NOTIFICATION)
-        break;
-
       if (!param->notify.value || param->notify.value_len == 0) {
         ESP_LOGW(TAG, "Notification with empty payload received");
         break;
@@ -812,7 +799,7 @@ void EnergomeraBleComponent::gattc_event_handler(esp_gattc_cb_event_t event, esp
 
       uint8_t slot_count = param->notify.value[0];
       ESP_LOGV(TAG, "Notification received (%u chunks to read)", slot_count);
-      this->begin_response_reads_(slot_count);
+      this->ble_begin_response_reads_(slot_count);
       break;
     }
 
@@ -828,8 +815,9 @@ void EnergomeraBleComponent::gattc_event_handler(esp_gattc_cb_event_t event, esp
       this->tx_fragment_started_ = false;
       this->tx_sequence_counter_ = 0;
       this->mtu_ = 23;
-      this->tx_message_remaining_.clear();
-      this->response_buffer_.clear();
+      this->tx_ptr_ = nullptr;
+      this->tx_data_remaining_ = 0;
+      this->rx_len_ = 0;
       this->expected_response_slots_ = 0;
       this->current_response_slot_ = 0;
 
@@ -849,8 +837,8 @@ void EnergomeraBleComponent::gap_event_handler(esp_gap_ble_cb_event_t event, esp
       if (!this->parent_->check_addr(param->ble_security.ble_req.bd_addr)) {
         break;
       }
-      this->pin_code_was_requested_ = true;
-      ESP_LOGE(TAG, "*** Passkey request - supplying PIN %06u ***", this->passkey_);
+      this->flags_.pin_code_was_requested = true;
+      ESP_LOGV(TAG, "Supplying PIN %06u", this->passkey_);
       esp_ble_passkey_reply(param->ble_security.ble_req.bd_addr, true, this->passkey_);
       break;
 
@@ -859,44 +847,38 @@ void EnergomeraBleComponent::gap_event_handler(esp_gap_ble_cb_event_t event, esp
         break;
       }
       auto auth_cmpl = param->ble_security.auth_cmpl;
-      ESP_LOGI(TAG, "ESP_GAP_BLE_SEC_REQ_EVT success: %d, fail reason: %d, auth mode: %d", auth_cmpl.success,
+      ESP_LOGV(TAG, "ESP_GAP_BLE_SEC_REQ_EVT success: %d, fail reason: %d, auth mode: %d", auth_cmpl.success,
                auth_cmpl.fail_reason, auth_cmpl.auth_mode);
-      ESP_LOGW(TAG, "*** Security request received, responding... ***");
       esp_err_t sec_rsp = esp_ble_gap_security_rsp(param->ble_security.ble_req.bd_addr, true);
-      ESP_LOGI(TAG, "Security response result: %d", sec_rsp);
+      ESP_LOGV(TAG, "esp_ble_gap_security_rsp result: %d", sec_rsp);
       break;
     }
 
-    case ESP_GAP_BLE_NC_REQ_EVT:
-      if (!this->parent_->check_addr(param->ble_security.ble_req.bd_addr)) {
-        break;
-      }
-      ESP_LOGE(TAG, "*** Numeric comparison request: %06u ***", param->ble_security.key_notif.passkey);
-      esp_ble_confirm_reply(param->ble_security.ble_req.bd_addr, true);
-      break;
-
-    case ESP_GAP_BLE_OOB_REQ_EVT: {
-      if (!this->parent_->check_addr(param->ble_security.ble_req.bd_addr)) {
-        break;
-      }
-      ESP_LOGE(TAG, "*** OOB data request - rejecting ***");
-      esp_ble_oob_req_reply(param->ble_security.ble_req.bd_addr, nullptr, 16);
-      break;
-    }
-
-    case ESP_GAP_BLE_AUTH_CMPL_EVT:
+    case ESP_GAP_BLE_AUTH_CMPL_EVT: {
       if (!this->parent_->check_addr(param->ble_security.auth_cmpl.bd_addr)) {
         break;
       }
 
       if (param->ble_security.auth_cmpl.success) {
         ESP_LOGVV(TAG, "Pairing completed successfully. Did we tell PIN to device ? %s ***",
-                  this->pin_code_was_requested_ ? "YES" : "NO");
+                  this->flags_.pin_code_was_requested ? "YES" : "NO");
 
       } else {
         ESP_LOGE(TAG, "*** Pairing FAILED, reason=%d ***", param->ble_security.auth_cmpl.fail_reason);
       }
-      break;
+    } break;
+
+    case ESP_GAP_BLE_READ_RSSI_COMPLETE_EVT: {
+      if (!this->parent_->check_addr(param->read_rssi_cmpl.remote_addr)) {
+        break;
+      }
+
+      this->rssi_ = param->read_rssi_cmpl.rssi;
+      if (this->ble_defer_fn_ != nullptr) {
+        this->ble_defer_fn_();
+        this->ble_defer_fn_ = nullptr;
+      }
+    }
     default:
       break;
   }
@@ -908,24 +890,12 @@ const char *EnergomeraBleComponent::state_to_string_(FsmState state) const {
       return "NOT_INITIALIZED";
     case FsmState::IDLE:
       return "IDLE";
-    case FsmState::START:
-      return "START";
-    case FsmState::RESOLVING:
-      return "RESOLVING";
-    case FsmState::REQUESTING_FIRMWARE:
-      return "REQUESTING_FIRMWARE";
-    case FsmState::WAITING_FIRMWARE:
-      return "WAITING_FIRMWARE";
-    case FsmState::ENABLING_NOTIFICATION:
-      return "ENABLING_NOTIFICATION";
-    case FsmState::WAITING_NOTIFICATION_ENABLE:
-      return "WAITING_NOTIFICATION_ENABLE";
+    case FsmState::STARTING:
+      return "STARTING";
     case FsmState::PREPARING_COMMAND:
       return "PREPARING_COMMAND";
     case FsmState::SENDING_COMMAND:
       return "SENDING_COMMAND";
-    case FsmState::WAITING_NOTIFICATION:
-      return "WAITING_NOTIFICATION";
     case FsmState::READING_RESPONSE:
       return "READING_RESPONSE";
     case FsmState::GOT_RESPONSE:
