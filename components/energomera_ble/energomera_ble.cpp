@@ -464,8 +464,8 @@ void EnergomeraBleComponent::try_connect() {
   this->tx_ptr_ = nullptr;
   this->tx_data_remaining_ = 0;
   this->rx_len_ = 0;
-  this->expected_response_slots_ = 0;
-  this->current_response_slot_ = 0;
+  this->rx_fragments_expected_ = 0;
+  this->rx_current_fragment_ = 0;
   this->flags_.raw = 0;
 
   this->request_iter = this->sensors_.begin();
@@ -590,9 +590,9 @@ bool EnergomeraBleComponent::ble_send_next_fragment_() {
   }
 
   bool more_after_this = this->tx_data_remaining_ > max_payload;
-  uint16_t chunk_len = more_after_this ? max_payload : this->tx_data_remaining_;
+  uint16_t payload_len = more_after_this ? max_payload : this->tx_data_remaining_;
 
-  const uint8_t packet_len = chunk_len + 1;
+  const uint8_t packet_len = payload_len + 1;
   uint8_t packet[packet_len];
 
   if (!this->tx_fragment_started_) {
@@ -611,7 +611,7 @@ bool EnergomeraBleComponent::ble_send_next_fragment_() {
     if (!more_after_this)
       packet[0] |= 0x80;
   }
-  memcpy(packet + 1, this->tx_ptr_, chunk_len);
+  memcpy(packet + 1, this->tx_ptr_, payload_len);
 
   esp_err_t status =
       esp_ble_gattc_write_char(this->parent_->get_gattc_if(), this->parent_->get_conn_id(), this->ch_handle_tx_,
@@ -624,8 +624,8 @@ bool EnergomeraBleComponent::ble_send_next_fragment_() {
   ESP_LOGV(TAG, "TX: %s", format_hex_pretty(packet, packet_len).c_str());
 
   if (more_after_this) {
-    this->tx_ptr_ += chunk_len;
-    this->tx_data_remaining_ -= chunk_len;
+    this->tx_ptr_ += payload_len;
+    this->tx_data_remaining_ -= payload_len;
     this->send_next_fragment_();
   } else {
     this->tx_ptr_ = nullptr;
@@ -634,23 +634,21 @@ bool EnergomeraBleComponent::ble_send_next_fragment_() {
   return true;
 }
 
-void EnergomeraBleComponent::ble_begin_response_reads_(uint8_t slot_count) {
-  uint8_t slots = slot_count + 1;
-  if (slots == 0)
-    slots = 1;
+void EnergomeraBleComponent::ble_initiate_fragment_reads_(uint8_t fragments_to_read) {
+  uint8_t fragments = fragments_to_read + 1;
 
-  if (slots > RX_HANDLES_NUM)
-    slots = RX_HANDLES_NUM;
+  if (fragments > RX_HANDLES_NUM)
+    fragments = RX_HANDLES_NUM;
 
-  this->expected_response_slots_ = slots;
-  this->current_response_slot_ = 0;
+  this->rx_fragments_expected_ = fragments;
+  this->rx_current_fragment_ = 0;
   this->rx_len_ = 0;
 
-  this->ble_issue_next_response_read_();
+  this->ble_request_next_fragment_();
 }
 
-void EnergomeraBleComponent::ble_issue_next_response_read_() {
-  if (this->current_response_slot_ >= this->expected_response_slots_) {
+void EnergomeraBleComponent::ble_request_next_fragment_() {
+  if (this->rx_current_fragment_ >= this->rx_fragments_expected_) {
     this->flags_.rx_reply = true;
     if (this->rx_len_ == 0) {
       return;
@@ -663,11 +661,11 @@ void EnergomeraBleComponent::ble_issue_next_response_read_() {
     return;
   }
 
-  uint16_t handle = this->ch_handles_rx_[this->current_response_slot_];
+  uint16_t handle = this->ch_handles_rx_[this->rx_current_fragment_];
   if (handle == 0) {
-    ESP_LOGW(TAG, "Response characteristic index %u not resolved, next", this->current_response_slot_);
-    this->current_response_slot_++;
-    this->ble_issue_next_response_read_();
+    ESP_LOGW(TAG, "Response characteristic index %u not resolved, next", this->rx_current_fragment_);
+    this->rx_current_fragment_++;
+    this->ble_request_next_fragment_();
     return;
   }
 
@@ -679,8 +677,7 @@ void EnergomeraBleComponent::ble_issue_next_response_read_() {
   }
 }
 
-void EnergomeraBleComponent::ble_handle_command_read_(
-    const esp_ble_gattc_cb_param_t::gattc_read_char_evt_param &param) {
+void EnergomeraBleComponent::ble_read_fragment_(const esp_ble_gattc_cb_param_t::gattc_read_char_evt_param &param) {
   if (param.status != ESP_GATT_OK) {
     ESP_LOGW(TAG, "Response read failed (handle 0x%04X): %d", param.handle, param.status);
     SET_STATE(FsmState::ERROR);
@@ -693,8 +690,8 @@ void EnergomeraBleComponent::ble_handle_command_read_(
   memcpy(this->rx_buffer_ + this->rx_len_, param.value, param.value_len);
   this->rx_len_ += param.value_len;
 
-  this->current_response_slot_++;
-  this->ble_issue_next_response_read_();
+  this->rx_current_fragment_++;
+  this->ble_request_next_fragment_();
 }
 
 void EnergomeraBleComponent::gattc_event_handler(esp_gattc_cb_event_t event, esp_gatt_if_t gattc_if,
@@ -763,7 +760,7 @@ void EnergomeraBleComponent::gattc_event_handler(esp_gattc_cb_event_t event, esp
     case ESP_GATTC_READ_CHAR_EVT: {
       if (param->read.conn_id != this->parent_->get_conn_id())
         break;
-      this->ble_handle_command_read_(param->read);
+      this->ble_read_fragment_(param->read);
       break;
     }
 
@@ -787,7 +784,7 @@ void EnergomeraBleComponent::gattc_event_handler(esp_gattc_cb_event_t event, esp
         break;
 
       ESP_LOGV(TAG, "Notification received (handle = 0x%04X, )", param->notify.handle, param->notify.value_len);
-      this->expected_response_slots_ = param->notify.value[0];
+      this->rx_fragments_expected_ = param->notify.value[0];
 
       if (!param->notify.is_notify)
         break;
@@ -797,9 +794,9 @@ void EnergomeraBleComponent::gattc_event_handler(esp_gattc_cb_event_t event, esp
         break;
       }
 
-      uint8_t slot_count = param->notify.value[0];
-      ESP_LOGV(TAG, "Notification received (%u chunks to read)", slot_count);
-      this->ble_begin_response_reads_(slot_count);
+      uint8_t fragment_count = param->notify.value[0];
+      ESP_LOGV(TAG, "Notification received (%u fragments to read)", fragment_count);
+      this->ble_initiate_fragment_reads_(fragment_count);
       break;
     }
 
@@ -818,8 +815,8 @@ void EnergomeraBleComponent::gattc_event_handler(esp_gattc_cb_event_t event, esp
       this->tx_ptr_ = nullptr;
       this->tx_data_remaining_ = 0;
       this->rx_len_ = 0;
-      this->expected_response_slots_ = 0;
-      this->current_response_slot_ = 0;
+      this->rx_fragments_expected_ = 0;
+      this->rx_current_fragment_ = 0;
 
       if (this->state_ != FsmState::PUBLISH) {
         SET_STATE(FsmState::IDLE);

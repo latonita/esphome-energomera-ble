@@ -16,7 +16,7 @@ enum SensorType { SENSOR, TEXT_SENSOR };
 
 class EnergomeraBleSensorBase {
  public:
-  static const uint8_t MAX_REQUEST_SIZE = 15;
+  static const uint8_t MAX_REQUEST_SIZE = 60;
 
   virtual SensorType get_type() const = 0;
   virtual void publish() = 0;

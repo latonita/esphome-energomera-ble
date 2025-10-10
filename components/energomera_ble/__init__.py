@@ -55,15 +55,15 @@ def validate_request_format(value):
     if not value.endswith(")"):
         value += "()"
 
-    pattern = r"\b[a-zA-Z_][a-zA-Z0-9_]*\s*\([^)]*\)$"
+    pattern = r"\b[a-zA-Z_][a-zA-Z0-9_]*\s*\(.*\)$"
     if not re.match(pattern, value):
         raise cv.Invalid(
             "Invalid request format. Proper is 'REQUEST' or 'REQUEST()' or 'REQUEST(ARGS)'"
         )
 
-    if len(value) > 15:
+    if len(value) > 60:
         raise cv.Invalid(
-            "Request length must be no longer than 15 characters including ()"
+            "Request length must be no longer than 60 characters including ()"
         )
     return value
 

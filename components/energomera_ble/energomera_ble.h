@@ -100,9 +100,9 @@ class EnergomeraBleComponent : public PollingComponent, public ble_client::BLECl
 
   // BLE Thread functions
   bool ble_send_next_fragment_();
-  void ble_begin_response_reads_(uint8_t slots);
-  void ble_issue_next_response_read_();
-  void ble_handle_command_read_(const esp_ble_gattc_cb_param_t::gattc_read_char_evt_param &param);
+  void ble_initiate_fragment_reads_(uint8_t slots);
+  void ble_request_next_fragment_();
+  void ble_read_fragment_(const esp_ble_gattc_cb_param_t::gattc_read_char_evt_param &param);
 
   void gattc_event_handler(esp_gattc_cb_event_t event, esp_gatt_if_t gattc_if,
                            esp_ble_gattc_cb_param_t *param) override;
@@ -139,13 +139,10 @@ class EnergomeraBleComponent : public PollingComponent, public ble_client::BLECl
 
   int8_t rssi_{0};
 
-  // std::vector<uint8_t> response_buffer_;
-  uint8_t expected_response_slots_{0};
-  uint8_t current_response_slot_{0};
+ 
+  uint8_t rx_fragments_expected_{0};
+  uint8_t rx_current_fragment_{0};
 
-  //  bool link_encrypted_{false};
-
-  //  std::string pin_code_;
   uint32_t passkey_{0};
 
   SensorMap sensors_{};
