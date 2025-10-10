@@ -9,7 +9,7 @@
 
 
 # esphome-energomera-ble
-Подключение EspHome к приборам учета (счетчикам) электроэнергии Энергомера CE208 C4 / CE308 C36 по протоколу Bluetooth Low Energey "BLE". Для работы требуется модуль esp32 с поддержкой BLE, т.е. esp32c2 или esp32s2 точно не подойдут.
+Подключение EspHome к приборам учета (счетчикам) электроэнергии Энергомера CE208 C4 / CE308 C36 по протоколу Bluetooth Low Energey "BLE". Для работы требуется модуль esp32 с поддержкой BLE (т.е. esp32c2 или esp32s2 точно не подойдут).
 
 # Настройка подключения
 Для подключения к электросчетчику необходимо указать:
@@ -43,6 +43,7 @@ energomera_ble:
   ble_client_id: ce308_ble
   pin: 123456           # из паспорта или из индикаторного устройства CE901
   update_interval: 60s  # при опросе большого количества сенсоров можем не успеть за 60с, увеличьте до 2мин
+  signal_strength: Signal strength
 ...
 ```
 
@@ -172,26 +173,27 @@ energomera_ble:
   id: ce308_meter
   ble_client_id: ce308_ble
   pin: 123456
-  update_interval: 120s
+  update_interval: 60s
+  signal_strength: Signal strength
 
 button:
-  - platform: template
-    name: "Remove bond"
-    on_press:
-      - lambda: id(ce308_meter).remove_bonding();
+  # - platform: template
+  #   name: "Remove bond"
+  #   on_press:
+  #     - lambda: id(ce308_meter).remove_bonding();
       
-  - platform: template
-    name: "Connect"
-    on_press:
-      - lambda: id(ce308_meter).try_connect();
+  # - platform: template
+  #   name: "Connect"
+  #   on_press:
+  #     - lambda: id(ce308_meter).try_connect();
 
-  - platform: safe_mode
-    name: "Restart (Safe Mode)"
+  # - platform: safe_mode
+  #   name: "Restart (Safe Mode)"
 
   - platform: restart
     name: "Restart"
 
-safe_mode:
+#safe_mode:
   
 sensor:
 

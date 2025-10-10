@@ -1,6 +1,7 @@
 #include "energomera_ble.h"
 
 #include "esphome/core/log.h"
+#include "esphome/core/application.h"
 
 #include <algorithm>
 #include <cctype>
@@ -20,6 +21,7 @@
 
 static constexpr uint32_t BOOT_TIMEOUT_MS = 10 * 1000;
 static constexpr uint32_t SAFEGUARD_INTERVAL_MS = 30 * 1000;
+static constexpr uint8_t SAFEGUARD_ERROR_LIMIT = 10;
 namespace esphome {
 namespace energomera_ble {
 
@@ -416,19 +418,18 @@ void EnergomeraBleComponent::internal_safeguard_() {
 
   ESP_LOGV(TAG,
            "Internal safeguard. FSM state is %s, My BLE state is %s, Parent "
-           "BLE state is %s",
+           "BLE state is %s. Error states count: %u, BLE connecting states count: %u",
            this->state_to_string_(this->state_), ble_client_state_to_string(my_ble_state),
            ble_client_state_to_string(parent_ble_state));
 
-  if (error_states > 10 || ble_connectings > 10) {
-    ESP_LOGE(TAG, "Too many errors or BLE connecting states. Disconnecting.");
-    delay(100);
+  if (error_states > SAFEGUARD_ERROR_LIMIT || ble_connectings > SAFEGUARD_ERROR_LIMIT) {
+    ESP_LOGE(TAG, "Too many errors or BLE connecting states. Rebooting.");
     ble_connectings = 0;
     error_states = 0;
-    this->parent_->disconnect();
     SET_STATE(FsmState::IDLE);
-    // ESP.restart();
-    // return;
+    this->parent_->disconnect();
+    delay(100);
+    App.reboot();
   }
 
   this->set_timeout("energomera_internal_safeguard", SAFEGUARD_INTERVAL_MS, [this]() { this->internal_safeguard_(); });
@@ -697,13 +698,6 @@ void EnergomeraBleComponent::ble_read_fragment_(const esp_ble_gattc_cb_param_t::
 void EnergomeraBleComponent::gattc_event_handler(esp_gattc_cb_event_t event, esp_gatt_if_t gattc_if,
                                                  esp_ble_gattc_cb_param_t *param) {
   switch (event) {
-    case ESP_GATTC_CONNECT_EVT: {
-      if (!this->parent_->check_addr(param->connect.remote_bda))
-        break;
-
-      break;
-    }
-
     case ESP_GATTC_OPEN_EVT: {
       if (!this->parent_->check_addr(param->open.remote_bda))
         break;
@@ -735,8 +729,8 @@ void EnergomeraBleComponent::gattc_event_handler(esp_gattc_cb_event_t event, esp
         break;
       }
 
-      // TODO: check if characteristics not found - we need to disconnect, remove
-      // bond, retry connection it will re-pair
+      // TODO: check if characteristics not found - we need to disconnect, then
+      //       remove bond, and retry connection to re-establish the bond
 
       esp_err_t status = esp_ble_gattc_register_for_notify(this->parent_->get_gattc_if(),
                                                            this->parent_->get_remote_bda(), this->ch_handle_tx_);
