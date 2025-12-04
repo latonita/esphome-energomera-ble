@@ -435,7 +435,7 @@ void EnergomeraBleComponent::internal_safeguard_() {
            "Internal safeguard. FSM state is %s, My BLE state is %s, Parent "
            "BLE state is %s. Error states count: %u, BLE connecting states count: %u",
            this->state_to_string_(this->state_), ble_client_state_to_string(my_ble_state),
-           ble_client_state_to_string(parent_ble_state));
+           ble_client_state_to_string(parent_ble_state), error_states, ble_connectings);
 
   if (error_states > SAFEGUARD_ERROR_LIMIT || ble_connectings > SAFEGUARD_ERROR_LIMIT) {
     ESP_LOGE(TAG, "Too many errors or BLE connecting states. Rebooting.");
