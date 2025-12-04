@@ -490,16 +490,25 @@ void EnergomeraBleComponent::try_connect() {
   esp_ble_gatt_set_local_mtu(DESIRED_MTU);
 
   esp_ble_auth_req_t auth_req = ESP_LE_AUTH_REQ_SC_MITM_BOND;
-  esp_ble_gap_set_security_param(ESP_BLE_SM_AUTHEN_REQ_MODE, &auth_req, sizeof(uint8_t));
-  esp_ble_io_cap_t iocap = ESP_IO_CAP_IN;
-  esp_ble_gap_set_security_param(ESP_BLE_SM_IOCAP_MODE, &iocap, sizeof(uint8_t));
-  uint8_t key_size = 16;
-  esp_ble_gap_set_security_param(ESP_BLE_SM_MAX_KEY_SIZE, &key_size, sizeof(uint8_t));
-  uint8_t oob_support = ESP_BLE_OOB_DISABLE;
-  esp_ble_gap_set_security_param(ESP_BLE_SM_OOB_SUPPORT, &oob_support, sizeof(uint8_t));
-  uint8_t bonding = 1;
-  esp_ble_gap_set_security_param(ESP_BLE_SM_SET_INIT_KEY, &bonding, sizeof(uint8_t));
+  esp_ble_gap_set_security_param(ESP_BLE_SM_AUTHEN_REQ_MODE, &auth_req, sizeof(auth_req));
 
+  esp_ble_io_cap_t iocap = ESP_IO_CAP_IN;
+  esp_ble_gap_set_security_param(ESP_BLE_SM_IOCAP_MODE, &iocap, sizeof(iocap));
+
+  uint8_t key_size = 16;
+  esp_ble_gap_set_security_param(ESP_BLE_SM_MAX_KEY_SIZE, &key_size, sizeof(key_size));
+
+  uint8_t oob_support = ESP_BLE_OOB_DISABLE;
+  esp_ble_gap_set_security_param(ESP_BLE_SM_OOB_SUPPORT, &oob_support, sizeof(oob_support));
+  
+  uint8_t bonding = ESP_BLE_ENC_KEY_MASK;
+  esp_ble_gap_set_security_param(ESP_BLE_SM_SET_INIT_KEY, &bonding, sizeof(uint8_t));
+  // uint8_t init_key = ESP_BLE_ENC_KEY_MASK | ESP_BLE_ID_KEY_MASK;
+  // esp_ble_gap_set_security_param(ESP_BLE_SM_SET_INIT_KEY, &init_key, sizeof(init_key));
+
+  // uint8_t resp_key = ESP_BLE_ID_KEY_MASK;
+  // esp_ble_gap_set_security_param(ESP_BLE_SM_SET_RSP_KEY, &resp_key, sizeof(resp_key));
+  
   this->parent_->connect();
 }
 
