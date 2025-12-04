@@ -153,7 +153,7 @@ void EnergomeraBleComponent::update() { this->try_connect(); }
 void EnergomeraBleComponent::dump_config() {
   ESP_LOGCONFIG(TAG, "Energomera BLE Component");
   if (this->parent_ != nullptr) {
-    ESP_LOGCONFIG(TAG, "  target address: %s", this->parent_->address_str().c_str());
+    ESP_LOGCONFIG(TAG, "  target address: %s", this->parent_->address_str());
   } else {
     ESP_LOGCONFIG(TAG, "  target address: not set");
   }
@@ -162,6 +162,21 @@ void EnergomeraBleComponent::dump_config() {
 void EnergomeraBleComponent::register_sensor(EnergomeraBleSensorBase *sensor) {
   this->sensors_.insert({sensor->get_request(), sensor});
 }
+
+#ifdef USE_TIME
+void EnergomeraBleComponent::sync_device_time() {
+  if (this->time_source_ == nullptr) {
+    ESP_LOGE(TAG, "Time source not set. Time can not be synced.");
+    return;
+  }
+  auto time = this->time_source_->now();
+  if (!time.is_valid()) {
+    ESP_LOGW(TAG, "Time is not yet valid.  Time can not be synced.");
+    return;
+  }
+  this->time_sync_requested_ = true;
+}
+#endif
 
 void EnergomeraBleComponent::loop() {
   ValueRefsArray vals;                                 // values from brackets, refs to this->buffers_.in
@@ -701,12 +716,17 @@ void EnergomeraBleComponent::gattc_event_handler(esp_gattc_cb_event_t event, esp
     case ESP_GATTC_OPEN_EVT: {
       if (!this->parent_->check_addr(param->open.remote_bda))
         break;
-      if (param->open.status != ESP_GATT_OK) {
+
+      if (param->open.status == ESP_GATT_OK) {
+        esp_ble_gattc_send_mtu_req(this->parent_->get_gattc_if(), this->parent_->get_conn_id());
+        break;
+      }
+
+      if (!this->flags_.already_disconnected) {
         ESP_LOGW(TAG, "Failed to open GATT connection: status=%d", param->open.status);
         SET_STATE(FsmState::ERROR);
-      } else {
-        esp_ble_gattc_send_mtu_req(this->parent_->get_gattc_if(), this->parent_->get_conn_id());
       }
+
       break;
     }
 
@@ -746,6 +766,7 @@ void EnergomeraBleComponent::gattc_event_handler(esp_gattc_cb_event_t event, esp
       if (err != ESP_OK) {
         ESP_LOGW(TAG, "Failed to enable notifications on handle 0x%04X: %d", this->ch_handle_cccd_, err);
         SET_STATE(FsmState::ERROR);
+        this->parent_->disconnect();
         return;
       }
 
@@ -769,6 +790,7 @@ void EnergomeraBleComponent::gattc_event_handler(esp_gattc_cb_event_t event, esp
       } else {
         ESP_LOGW(TAG, "Failed to enable notifications: %d", param->write.status);
         SET_STATE(FsmState::ERROR);
+        this->parent_->disconnect();
       }
       break;
     }
@@ -811,6 +833,7 @@ void EnergomeraBleComponent::gattc_event_handler(esp_gattc_cb_event_t event, esp
       this->rx_len_ = 0;
       this->rx_fragments_expected_ = 0;
       this->rx_current_fragment_ = 0;
+      this->flags_.already_disconnected = true;
 
       if (this->state_ != FsmState::PUBLISH) {
         SET_STATE(FsmState::IDLE);

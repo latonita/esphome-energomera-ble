@@ -49,12 +49,13 @@ class EnergomeraBleComponent : public PollingComponent, public ble_client::BLECl
   void remove_bonding();
 
 #ifdef USE_TIME
-  void set_time_source(time::RealTimeClock *time) { (void) time; }
+  void set_time_source(time::RealTimeClock *rtc) { this->time_source_ = rtc; };
+  void sync_device_time();  // set current time from RTC
 #endif
 
  protected:
   bool set_sensor_value_(EnergomeraBleSensorBase *sensor, ValueRefsArray &vals);
-  
+
   enum class FsmState : uint8_t {
     NOT_INITIALIZED = 0,
     IDLE,
@@ -73,12 +74,12 @@ class EnergomeraBleComponent : public PollingComponent, public ble_client::BLECl
 
   void prepare_request_frame_(const std::string &request);
   void send_next_fragment_();
-  
+
   // BLE send/receive
   uint16_t get_max_payload_() const;
   void run_in_ble_thread_(const ble_defer_fn_t &fn);
   ble_defer_fn_t ble_defer_fn_{nullptr};
-  
+
   // BLE Thread functions
   bool ble_discover_characteristics_();
   void ble_set_error_();
@@ -100,6 +101,7 @@ class EnergomeraBleComponent : public PollingComponent, public ble_client::BLECl
       bool pin_code_was_requested : 1;
       bool tx_error : 1;
       bool rx_reply : 1;
+      bool already_disconnected : 1;
     };
   } flags_{0};
 
@@ -120,11 +122,14 @@ class EnergomeraBleComponent : public PollingComponent, public ble_client::BLECl
   size_t rx_len_{0};
   uint8_t rx_fragments_expected_{0};
   uint8_t rx_current_fragment_{0};
-  
- 
-  
+
   int8_t rssi_{0};
   uint32_t passkey_{0};
+
+#ifdef USE_TIME
+  time::RealTimeClock *time_source_{nullptr};
+  bool time_sync_requested_{false};
+#endif
 
   SensorMap sensors_{};
   SensorMap::iterator request_iter{nullptr};
