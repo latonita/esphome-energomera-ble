@@ -31,6 +31,7 @@ DEFAULTS_UPDATE_INTERVAL = "60s"
 CONF_ENERGOMERA_BLE_ID = "energomera_ble_id"
 CONF_REQUEST = "request"
 CONF_SUB_INDEX = "sub_index"
+CONF_TRIES_TILL_REBOOT = "tries_till_reboot"
 
 energomera_ble_ns = cg.esphome_ns.namespace("energomera_ble")
 EnergomeraBle = energomera_ble_ns.class_(
@@ -73,6 +74,7 @@ CONFIG_SCHEMA = cv.All(
             ),
             cv.Optional(CONF_TIME_ID): cv.use_id(time.RealTimeClock),
             cv.Required(CONF_PIN): cv.int_range(min=0,max=999999),
+            cv.Optional(CONF_TRIES_TILL_REBOOT, default=60): cv.int_range(min=1, max=9999),
         }
     )
     .extend(ble_client.BLE_CLIENT_SCHEMA)
@@ -97,3 +99,4 @@ async def to_code(config):
     cg.add(var.set_update_interval(config[CONF_UPDATE_INTERVAL]))
 
     cg.add(var.set_passkey(config[CONF_PIN]))
+    cg.add(var.set_tries_till_reboot(config[CONF_TRIES_TILL_REBOOT]))

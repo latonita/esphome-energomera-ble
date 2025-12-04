@@ -43,6 +43,7 @@ class EnergomeraBleComponent : public PollingComponent, public ble_client::BLECl
 
   void set_passkey(uint32_t passkey) { this->passkey_ = passkey % 1000000U; };
   void set_signal_strength(sensor::Sensor *signal_strength) { signal_strength_ = signal_strength; }
+  void set_tries_till_reboot(uint16_t tries) { this->tries_till_reboot_ = tries; };
   void register_sensor(EnergomeraBleSensorBase *sensor);
 
   void try_connect();
@@ -102,6 +103,7 @@ class EnergomeraBleComponent : public PollingComponent, public ble_client::BLECl
       bool tx_error : 1;
       bool rx_reply : 1;
       bool already_disconnected : 1;
+      bool connection_successful : 1;
     };
   } flags_{0};
 
@@ -125,7 +127,10 @@ class EnergomeraBleComponent : public PollingComponent, public ble_client::BLECl
 
   int8_t rssi_{0};
   uint32_t passkey_{0};
-
+  
+  uint16_t error_states{0};
+    uint16_t tries_till_reboot_{60};
+  
 #ifdef USE_TIME
   time::RealTimeClock *time_source_{nullptr};
   bool time_sync_requested_{false};

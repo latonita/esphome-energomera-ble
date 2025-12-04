@@ -16,12 +16,15 @@
 #define SET_STATE(st) \
   { \
     ESP_LOGV(TAG, "State change request:"); \
+    if (st == FsmState::ERROR) { \
+      this->error_states++; \
+    } \
     this->set_state_(st); \
   }
 
 static constexpr uint32_t BOOT_TIMEOUT_MS = 10 * 1000;
 static constexpr uint32_t SAFEGUARD_INTERVAL_MS = 30 * 1000;
-static constexpr uint8_t SAFEGUARD_ERROR_LIMIT = 10;
+
 namespace esphome {
 namespace energomera_ble {
 
@@ -194,6 +197,7 @@ void EnergomeraBleComponent::loop() {
 
     case FsmState::PREPARING_COMMAND: {
       if (this->request_iter == this->sensors_.end()) {
+        this->error_states = 0;  // reset error count on successful completion
         SET_STATE(FsmState::PUBLISH);
         this->parent_->disconnect();
         break;
@@ -418,8 +422,7 @@ const char *ble_client_state_to_string(espbt::ClientState state) {
 }
 
 void EnergomeraBleComponent::internal_safeguard_() {
-  static uint8_t error_states = 0;
-  static uint8_t ble_connectings = 0;
+  static uint16_t ble_connectings = 0;
 
   if (this->state_ == FsmState::ERROR) {
     error_states++;
@@ -433,11 +436,12 @@ void EnergomeraBleComponent::internal_safeguard_() {
 
   ESP_LOGV(TAG,
            "Internal safeguard. FSM state is %s, My BLE state is %s, Parent "
-           "BLE state is %s. Error states count: %u, BLE connecting states count: %u",
+           "BLE state is %s. Error states count: %u, BLE connecting states count: %u. Tries till reboot: %u",
            this->state_to_string_(this->state_), ble_client_state_to_string(my_ble_state),
-           ble_client_state_to_string(parent_ble_state), error_states, ble_connectings);
+           ble_client_state_to_string(parent_ble_state), error_states, ble_connectings,
+           tries_till_reboot_ - error_states);
 
-  if (error_states > SAFEGUARD_ERROR_LIMIT || ble_connectings > SAFEGUARD_ERROR_LIMIT) {
+  if (error_states > tries_till_reboot_) {  // || ble_connectings > tries_till_reboot_) {
     ESP_LOGE(TAG, "Too many errors or BLE connecting states. Rebooting.");
     ble_connectings = 0;
     error_states = 0;
@@ -500,7 +504,7 @@ void EnergomeraBleComponent::try_connect() {
 
   uint8_t oob_support = ESP_BLE_OOB_DISABLE;
   esp_ble_gap_set_security_param(ESP_BLE_SM_OOB_SUPPORT, &oob_support, sizeof(oob_support));
-  
+
   uint8_t bonding = ESP_BLE_ENC_KEY_MASK;
   esp_ble_gap_set_security_param(ESP_BLE_SM_SET_INIT_KEY, &bonding, sizeof(uint8_t));
   // uint8_t init_key = ESP_BLE_ENC_KEY_MASK | ESP_BLE_ID_KEY_MASK;
@@ -508,7 +512,7 @@ void EnergomeraBleComponent::try_connect() {
 
   // uint8_t resp_key = ESP_BLE_ID_KEY_MASK;
   // esp_ble_gap_set_security_param(ESP_BLE_SM_SET_RSP_KEY, &resp_key, sizeof(resp_key));
-  
+
   this->parent_->connect();
 }
 
@@ -828,7 +832,13 @@ void EnergomeraBleComponent::gattc_event_handler(esp_gattc_cb_event_t event, esp
     case ESP_GATTC_DISCONNECT_EVT: {
       if (!this->parent_->check_addr(param->disconnect.remote_bda))
         break;
-      ESP_LOGVV(TAG, "GATT client disconnected: reason=0x%02X", param->disconnect.reason);
+
+      if (param->disconnect.reason == 0x16) {
+        ESP_LOGVV(TAG, "GATT client disconnected: reason=0x%02X", param->disconnect.reason);
+      } else {
+        ESP_LOGW(TAG, "GATT client disconnected unexpectedly: reason=0x%02X", param->disconnect.reason);
+        this->error_states++;
+      }
 
       this->ch_handle_tx_ = 0;
       this->ch_handle_cccd_ = 0;
