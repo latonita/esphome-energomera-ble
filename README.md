@@ -7,8 +7,10 @@
 [Пульсар-М](https://github.com/latonita/esphome-pulsar-m) •
 [Энергомера BLE](https://github.com/latonita/esphome-energomera-ble) •
 [Нартис RF433](https://github.com/latonita/esphome-nartis-rf-meter) •
-[Нартис RF433-2](https://github.com/latonita/esphome-uart-nartis-rf) •
+[Нартис RF433-2](https://github.com/latonita/esphome-nartis-rf-2-meter) •
+[Мост UART↔RF433-2](https://github.com/latonita/esphome-uart-nartis-rf) •
 [Nordic UART (BLE NUS)](https://github.com/latonita/esphome-nordic-uart-ble) •
+
 
 # esphome-energomera-ble
 Подключение EspHome к приборам учета (счетчикам) электроэнергии Энергомера CE208 C4 / CE308 C36 по протоколу Bluetooth Low Energey "BLE". Для работы требуется модуль esp32 с поддержкой BLE (т.е. esp32c2 или esp32s2 точно не подойдут).
