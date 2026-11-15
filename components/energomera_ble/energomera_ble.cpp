@@ -664,7 +664,7 @@ bool EnergomeraBleComponent::ble_send_next_fragment_() {
 }
 
 void EnergomeraBleComponent::ble_initiate_fragment_reads_(uint8_t fragments_to_read) {
-  uint8_t fragments = fragments_to_read + 1;
+  uint8_t fragments = fragments_to_read;
 
   if (fragments > RX_HANDLES_NUM)
     fragments = RX_HANDLES_NUM;
