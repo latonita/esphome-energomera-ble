@@ -812,7 +812,7 @@ void EnergomeraBleComponent::gattc_event_handler(esp_gattc_cb_event_t event, esp
       if (param->notify.conn_id != this->parent_->get_conn_id())
         break;
 
-      ESP_LOGV(TAG, "Notification received (handle = 0x%04X, )", param->notify.handle, param->notify.value_len);
+      ESP_LOGV(TAG, "Notification received (handle = 0x%04X, len = %u)", param->notify.handle, param->notify.value_len);
       this->rx_fragments_expected_ = param->notify.value[0];
 
       if (!param->notify.is_notify)
@@ -871,7 +871,7 @@ void EnergomeraBleComponent::gap_event_handler(esp_gap_ble_cb_event_t event, esp
         break;
       }
       this->flags_.pin_code_was_requested = true;
-      ESP_LOGV(TAG, "Supplying PIN %06u", this->passkey_);
+      ESP_LOGV(TAG, "Supplying PIN %06lu", (unsigned long) this->passkey_);
       esp_ble_passkey_reply(param->ble_security.ble_req.bd_addr, true, this->passkey_);
       break;
 
