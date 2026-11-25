@@ -652,7 +652,10 @@ bool EnergomeraBleComponent::ble_send_next_fragment_() {
     return false;
   }
 
-  ESP_LOGV(TAG, "TX: %s", format_hex_pretty(packet, packet_len).c_str());
+#if ESPHOME_LOG_LEVEL >= ESPHOME_LOG_LEVEL_VERBOSE
+  char tx_hex[format_hex_pretty_size(TX_BUFFER_SIZE + 1)];
+  ESP_LOGV(TAG, "TX: %s", format_hex_pretty_to(tx_hex, sizeof(tx_hex), packet, packet_len, '.'));
+#endif
 
   if (more_after_this) {
     this->tx_ptr_ += payload_len;
@@ -688,7 +691,10 @@ void EnergomeraBleComponent::ble_request_next_fragment_() {
       this->rx_buffer_[i] = this->rx_buffer_[i] & 0x7F;
     }
     ESP_LOGV(TAG, "RX: %s", format_frame_pretty(this->rx_buffer_, this->rx_len_).c_str());
-    ESP_LOGVV(TAG, "RX: %s", format_hex_pretty(this->rx_buffer_, this->rx_len_).c_str());
+#if ESPHOME_LOG_LEVEL >= ESPHOME_LOG_LEVEL_VERY_VERBOSE
+    char rx_hex[format_hex_pretty_size(RX_BUFFER_SIZE)];
+    ESP_LOGVV(TAG, "RX: %s", format_hex_pretty_to(rx_hex, sizeof(rx_hex), this->rx_buffer_, this->rx_len_, '.'));
+#endif
     return;
   }
 
