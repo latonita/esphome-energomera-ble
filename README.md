@@ -21,7 +21,7 @@
  - PIN код - либо в паспорте("BLE-пароль радиоинтерфейса"), либо в индикаторного устройства CE901 (пин код виден при недоступности прибора)
 ![Формуляр](images/pin-code.jpg)
 
-Необходимо подключить стандартные компоненты `esp32_ble_tracker` и `ble_client` с с указанными настройками.
+Необходимо подключить стандартные компоненты `esp32_ble`, `esp32_ble_tracker` и `ble_client` с указанными настройками. Требуется ESPHome 2026.11 или новее.
 
 ```yaml
 ...
@@ -30,11 +30,13 @@ external_components:
     refresh: 0s
     components: [energomera_ble]
 
+esp32_ble:
+  max_connections: 1
+
 esp32_ble_tracker:
   scan_parameters: 
     active: false       # можно включить для первичного поиска счетчика
     continuous: false   # постоянный поиск не нужен
-  max_connections: 1
 
 ble_client:
 - id: ce308_ble
@@ -162,11 +164,13 @@ wifi:
   password: !secret wifi_password
 
 
+esp32_ble:
+  max_connections: 1
+
 esp32_ble_tracker:
  scan_parameters: 
    active: true
    continuous: False
- max_connections: 1
 
 ble_client:
  - mac_address: "11:22:33:44:55:66"
