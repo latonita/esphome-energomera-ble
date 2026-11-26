@@ -653,8 +653,8 @@ bool EnergomeraBleComponent::ble_send_next_fragment_() {
   }
 
 #if ESPHOME_LOG_LEVEL >= ESPHOME_LOG_LEVEL_VERBOSE
-  char tx_hex[format_hex_pretty_size(TX_BUFFER_SIZE + 1)];
-  ESP_LOGV(TAG, "TX: %s", format_hex_pretty_to(tx_hex, sizeof(tx_hex), packet, packet_len, '.'));
+  char hex_buf[format_hex_pretty_size(TX_BUFFER_SIZE + 1)];
+  ESP_LOGV(TAG, "TX: %s", format_hex_pretty_to(hex_buf, sizeof(hex_buf), packet, packet_len, '.'));
 #endif
 
   if (more_after_this) {
@@ -666,6 +666,19 @@ bool EnergomeraBleComponent::ble_send_next_fragment_() {
     this->tx_data_remaining_ = 0;
   }
   return true;
+}
+
+// Hex dump at VERY_VERBOSE, split into short lines: keeps the stack buffer small
+// and stays under the logger's line length limit.
+void EnergomeraBleComponent::log_hex_(const char *dir, const uint8_t *data, size_t len) {
+#if ESPHOME_LOG_LEVEL >= ESPHOME_LOG_LEVEL_VERY_VERBOSE
+  static constexpr size_t CHUNK = 32;
+  char hex_buf[format_hex_pretty_size(CHUNK)];
+  for (size_t off = 0; off < len; off += CHUNK) {
+    size_t n = std::min(CHUNK, len - off);
+    ESP_LOGVV(TAG, "%s[%u]: %s", dir, static_cast<unsigned>(off), format_hex_pretty_to(hex_buf, data + off, n, '.'));
+  }
+#endif
 }
 
 void EnergomeraBleComponent::ble_initiate_fragment_reads_(uint8_t fragments_to_read) {
@@ -695,10 +708,7 @@ void EnergomeraBleComponent::ble_request_next_fragment_() {
       this->rx_buffer_[i] = this->rx_buffer_[i] & 0x7F;
     }
     ESP_LOGV(TAG, "RX: %s", format_frame_pretty(this->rx_buffer_, this->rx_len_).c_str());
-#if ESPHOME_LOG_LEVEL >= ESPHOME_LOG_LEVEL_VERY_VERBOSE
-    char rx_hex[format_hex_pretty_size(RX_BUFFER_SIZE)];
-    ESP_LOGVV(TAG, "RX: %s", format_hex_pretty_to(rx_hex, sizeof(rx_hex), this->rx_buffer_, this->rx_len_, '.'));
-#endif
+    this->log_hex_("RX", this->rx_buffer_, this->rx_len_);
     return;
   }
 
