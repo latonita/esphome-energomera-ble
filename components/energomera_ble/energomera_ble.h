@@ -55,6 +55,7 @@ class EnergomeraBleComponent : public PollingComponent, public ble_client::BLECl
 #endif
 
  protected:
+  void log_hex_(const char *dir, const uint8_t *data, size_t len);
   bool set_sensor_value_(EnergomeraBleSensorBase *sensor, ValueRefsArray &vals);
 
   enum class FsmState : uint8_t {
